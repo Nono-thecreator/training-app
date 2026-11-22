@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Training">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Training</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --ink:#1d1d1f; --muted:#6e6e73; --line:#e3e3e0;
+          --accent:#2f5d50; --ok:#2e7d32; --bad:#c62828; --pend:#8a6d1d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background:var(--bg); color:var(--ink);
+         padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { font-size:24px; margin:8px 0 4px; }
+  h2 { font-size:18px; margin:0; }
+  .muted { color:var(--muted); font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin:12px 0; }
+  button { font:inherit; border:0; border-radius:10px; padding:12px 14px; background:var(--accent); color:#fff; }
+  button.ghost { background:transparent; color:var(--accent); padding:8px; }
+  button.ok { background:var(--ok); } button.bad { background:var(--bad); }
+  button:disabled { opacity:.5; }
+  input, textarea { font:inherit; width:100%; padding:10px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  textarea { min-height:80px; }
+  label { display:block; font-size:14px; color:var(--muted); margin:10px 0 4px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  .nav { display:flex; justify-content:space-between; align-items:center; }
+  .session { display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+  .badge { font-size:13px; padding:4px 10px; border-radius:20px; background:#eee; white-space:nowrap; }
+  .Attended { background:#e3f1e4; color:var(--ok); } .Missed { background:#fbe4e4; color:var(--bad); }
+  .Pending, .Optional { background:#f6efd9; color:var(--pend); }
+  .ex h3 { margin:0 0 2px; font-size:16px; }
+  .ex .inputs { display:flex; gap:8px; margin-top:8px; }
+  .info { background:#eef3f1; } .info h3 { margin:2px 0; font-size:16px; }
+  .actions { display:flex; gap:8px; margin:16px 0 32px; }
+  .actions button { flex:1; padding:14px; }
+  .msg { padding:10px 12px; border-radius:10px; margin:12px 0; }
+  .msg.err { background:#fbe4e4; color:var(--bad); } .msg.good { background:#e3f1e4; color:var(--ok); }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main id="app"><p class="muted">Loading…</p></main>
+
+<script>
+/* Training app – reads/writes your sheet through its Apps Script link.
+   The link and PIN are stored only on this phone (never in this code). */
+const store = {
+  get url() { try { return localStorage.getItem('scriptUrl') || ''; } catch (e) { return ''; } },
+  get pin() { try { return localStorage.getItem('pin') || ''; } catch (e) { return ''; } },
+  save(url, pin) { try { localStorage.setItem('scriptUrl', url); localStorage.setItem('pin', pin); } catch (e) {} },
+  clear() { try { localStorage.removeItem('scriptUrl'); localStorage.removeItem('pin'); } catch (e) {} }
+};
+const FIRST_DAY = '2026-11-23', LAST_DAY = '2027-01-17';
+const app = document.getElementById('app');
+let current = { date: null, data: null, person: '' };
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+function iso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function addDays(dateStr, n) { const [y, m, d] = dateStr.split('-').map(Number); return iso(new Date(y, m - 1, d + n)); }
+function pretty(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function startDate() {
+  const t = iso(new Date());
+  return t < FIRST_DAY ? FIRST_DAY : t > LAST_DAY ? LAST_DAY : t;
+}
+
+async function call(body, url, pin) {
+  const res = await fetch(url || store.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids CORS preflight
+    body: JSON.stringify(Object.assign({ pin: pin || store.pin }, body))
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Something went wrong');
+  return data;
+}
+
+/* ---------- Setup ---------- */
+function showSetup(error, typedUrl, typedPin) {
+  const u = typedUrl != null ? typedUrl : store.url, pn = typedPin != null ? typedPin : store.pin;
+  app.innerHTML = `
+    <h1>Set up</h1>
+    <p class="muted">Do this once on this phone. Ask Noam for your link and PIN.</p>
+    ${error ? `<div class="msg err">${esc(error)}</div>` : ''}
+    <div class="card">
+      <label for="url">Sheet link (ends in /exec)</label>
+      <input id="url" type="url" autocomplete="off" autocapitalize="off" value="${esc(u)}">
+      <label for="pin">PIN</label>
+      <input id="pin" type="password" inputmode="numeric" autocomplete="off" value="${esc(pn)}">
+      <p><button id="connect">Connect</button></p>
+    </div>`;
+  document.getElementById('connect').onclick = async (ev) => {
+    const url = document.getElementById('url').value.trim();
+    const pin = document.getElementById('pin').value.trim();
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) return showSetup('The link should start with https://script.google.com/ and end in /exec', url, pin);
+    ev.target.disabled = true; ev.target.textContent = 'Checking…';
+    try {
+      const r = await call({ action: 'ping' }, url, pin);
+      store.save(url, pin);
+      current.person = r.person;
+      showDay(startDate());
+    } catch (e) { showSetup(e.message === 'Failed to fetch' ? 'Could not reach the sheet. Check the link.' : e.message, url, pin); }
+  };
+}
+
+/* ---------- Day ---------- */
+async function showDay(dateStr) {
+  current.date = dateStr;
+  const isToday = dateStr === iso(new Date());
+  app.innerHTML = `
+    <div class="nav">
+      <button class="ghost" id="prev" ${dateStr <= FIRST_DAY ? 'disabled' : ''}>‹ Prev</button>
+      <span class="muted">${isToday ? 'Today' : ''}</span>
+      <button class="ghost" id="next" ${dateStr >= LAST_DAY ? 'disabled' : ''}>Next ›</button>
+    </div>
+    <h1>${esc(pretty(dateStr))}</h1>
+    <div id="body"><p class="muted">Loading…</p></div>
+    <p><button class="ghost" id="settings">Settings</button></p>`;
+  document.getElementById('prev').onclick = () => showDay(addDays(dateStr, -1));
+  document.getElementById('next').onclick = () => showDay(addDays(dateStr, 1));
+  document.getElementById('settings').onclick = () => showSetup();
+  const body = document.getElementById('body');
+  try {
+    const d = await call({ action: 'day', date: dateStr });
+    if (current.date !== dateStr) return; // user moved on
+    current.data = d;
+    if (!d.sessions.length) { body.innerHTML = `<p class="muted">Week ${esc(d.week)}</p><div class="card"><h2>Rest day</h2></div>`; return; }
+    body.innerHTML = `<p class="muted">Week ${esc(d.week)}</p>` + d.sessions.map((s, i) => `
+      <div class="card session" data-i="${i}">
+        <div><div class="muted">${esc(s.slot === 'Main' ? 'Session' : s.slot)}</div><h2>${esc(s.session)}</h2></div>
+        <span class="badge ${esc(s.status)}">${esc(s.status)}</span>
+      </div>`).join('');
+    body.querySelectorAll('.session').forEach(el => el.onclick = () => showSession(Number(el.dataset.i)));
+  } catch (e) {
+    if (/PIN/.test(e.message)) return showSetup(e.message);
+    body.innerHTML = `<div class="msg err">${esc(e.message === 'Failed to fetch' ? 'No connection to the sheet. Try again.' : e.message)}</div>`;
+  }
+}
+
+/* ---------- Session ---------- */
+function showSession(i) {
+  const s = current.data.sessions[i];
+  const exHtml = s.exercises.map((x, j) => x.info ? `
+      <div class="card info">
+        <div class="muted">Flow format</div><h3>${esc(x.setsReps)}</h3>
+        ${x.notes ? `<div class="muted">${esc(x.notes)}</div>` : ''}
+      </div>` : `
+      <div class="card ex">
+        <h3>${esc(x.exercise)}</h3>
+        <div class="muted">${esc(x.setsReps)}${x.rest ? ' · rest ' + esc(x.rest) : ''}</div>
+        ${x.notes ? `<div class="muted">${esc(x.notes)}</div>` : ''}
+        <div class="inputs">
+          <div><label for="w${j}">Weight (kg)</label>
+            <input id="w${j}" inputmode="decimal" value="${esc(x.logged ? x.logged.weight : '')}"></div>
+          <div><label for="r${j}">Reps done</label>
+            <input id="r${j}" inputmode="text" placeholder="e.g. 8,8,7" value="${esc(x.logged ? x.logged.reps : '')}"></div>
+        </div>
+      </div>`).join('');
+  app.innerHTML = `
+    <div class="nav"><button class="ghost" id="back">‹ ${esc(pretty(current.date))}</button><span></span></div>
+    <h1>${esc(s.session)}</h1>
+    <p class="muted">${esc(s.slot === 'Main' ? '' : s.slot + ' · ')}Status: <span class="badge ${esc(s.status)}">${esc(s.status)}</span></p>
+    ${exHtml}
+    <label for="notes">Notes (how it felt)</label>
+    <textarea id="notes">${esc(s.notes)}</textarea>
+    <div id="msg"></div>
+    <div class="actions">
+      <button class="bad" id="missed">Missed</button>
+      <button class="ok" id="attended">Attended – save</button>
+    </div>`;
+  document.getElementById('back').onclick = () => showDay(current.date);
+
+  const save = async (status, btn) => {
+    const weights = s.exercises.map((x, j) => x.info ? null : {
+      exercise: x.exercise,
+      weight: document.getElementById('w' + j).value,
+      reps: document.getElementById('r' + j).value
+    }).filter(Boolean);
+    const buttons = app.querySelectorAll('.actions button');
+    buttons.forEach(b => b.disabled = true);
+    const label = btn.textContent; btn.textContent = 'Saving…';
+    const msg = document.getElementById('msg');
+    try {
+      await call({ action: 'save', date: current.date, slot: s.slot, status,
+                   notes: document.getElementById('notes').value,
+                   weights: status === 'Attended' ? weights : undefined });
+      msg.innerHTML = `<div class="msg good">Saved as ${esc(status)}.</div>`;
+      setTimeout(() => showDay(current.date), 800);
+    } catch (e) {
+      msg.innerHTML = `<div class="msg err">Not saved: ${esc(e.message === 'Failed to fetch' ? 'no connection. Try again.' : e.message)}</div>`;
+      buttons.forEach(b => b.disabled = false); btn.textContent = label;
+    }
+  };
+  document.getElementById('attended').onclick = (e) => save('Attended', e.target);
+  document.getElementById('missed').onclick = (e) => save('Missed', e.target);
+}
+
+/* ---------- Start ---------- */
+if (store.url && store.pin) showDay(startDate()); else showSetup();
+</script>
+</body>
+</html>
